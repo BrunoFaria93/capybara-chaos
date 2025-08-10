@@ -7,6 +7,7 @@ import {
   Dimensions,
   TouchableWithoutFeedback,
   ScrollView,
+  Alert,
   Modal,
 } from "react-native";
 import {
@@ -86,7 +87,7 @@ const scenarios: Scenario[] = [
 ];
 
 const { width, height } = Dimensions.get("window");
-const levelWidth = 2000; // Larger level size
+const levelWidth = 2000;
 
 export default function Game({
   roomId,
@@ -137,6 +138,7 @@ export default function Game({
   const [gameWinner, setGameWinner] = useState<string | null>(null);
   const [isDead, setIsDead] = useState(false);
   const [reachedFlag, setReachedFlag] = useState(false);
+  const [isHost, setIsHost] = useState(false);
 
   const posRef = useRef({ x: width / 2, y: height - 100 });
   const [joystickPosition, setJoystickPosition] = useState({ x: 0, y: 0 });
@@ -150,6 +152,7 @@ export default function Game({
   const panGestureRef = useRef(null);
   const initialDragPos = useRef({ x: 0, y: 0 });
   const [cameraOffset, setCameraOffset] = useState(0);
+  const lastUpdateRef = useRef<number>(0);
 
   const GRAVITY = 0.8;
   const JUMP_FORCE = -15;
@@ -158,7 +161,70 @@ export default function Game({
   const FRICTION = 0.8;
   const WALL_JUMP_FORCE = 12;
 
+  // PRINCIPAIS CORREÇÕES: Listeners de socket mais robustos e com logs detalhados
   useEffect(() => {
+    console.log(
+      "🎮 [CLIENTE] Configurando listeners do socket, ID:",
+      socket.id
+    );
+    console.log("🎮 [CLIENTE] Sala atual:", roomId);
+
+    socket.on("roomUpdate", (roomData: any) => {
+      console.log("🏠 [CLIENTE] roomUpdate recebido:", {
+        fase: roomData.phase,
+        jogadores: Object.keys(roomData.players || {}).length,
+        cenario: roomData.scenario?.name || "nenhum",
+        host: roomData.host,
+        isHost: roomData.host === socket.id,
+        players: roomData.players,
+      });
+
+      // Atualizar jogadores
+      if (roomData.players) {
+        console.log("👥 [CLIENTE] Atualizando jogadores:", roomData.players);
+        setPlayers(roomData.players);
+      }
+
+      // Atualizar fase
+      if (roomData.phase) {
+        console.log(
+          `🔄 [CLIENTE] Mudando fase: ${gamePhase} → ${roomData.phase}`
+        );
+        setGamePhase(roomData.phase);
+      }
+
+      // Atualizar cenário
+      if (roomData.scenario) {
+        console.log(
+          `🌍 [CLIENTE] Cenário atualizado: ${roomData.scenario.name}`
+        );
+        setSelectedScenario(roomData.scenario);
+      }
+
+      // Atualizar status de host
+      if (roomData.host) {
+        const isPlayerHost = roomData.host === socket.id;
+        console.log(
+          `👑 [CLIENTE] Status de host: ${isPlayerHost ? "SIM" : "NÃO"}`
+        );
+        setIsHost(isPlayerHost);
+      }
+
+      // Atualizar obstáculos
+      if (roomData.obstacles) {
+        setObstacles(roomData.obstacles);
+      }
+    });
+
+    socket.on("playerMoved", (playerUpdate: Player) => {
+      console.log("🚶 [CLIENTE] playerMoved recebido:", playerUpdate);
+      setPlayers((prev) => {
+        const updated = { ...prev, [playerUpdate.id]: playerUpdate };
+        console.log("👥 [CLIENTE] Estado players atualizado:", updated);
+        return updated;
+      });
+    });
+
     socket.on(
       "roundStarted",
       (data: {
@@ -166,43 +232,45 @@ export default function Game({
         scenario?: Scenario;
         players: Record<string, Player>;
       }) => {
-        console.log("Evento roundStarted recebido no Game.tsx:", data);
+        console.log("🚀 [CLIENTE] roundStarted recebido:", {
+          obstaculos: data.obstacles?.length || 0,
+          jogadores: Object.keys(data.players || {}).length,
+          cenario: data.scenario?.name || "nenhum",
+        });
+
         setObstacles(data.obstacles || []);
-        if (data.scenario) {
-          setSelectedScenario(data.scenario);
-        }
-        setPlayers(data.players || {});
+        if (data.scenario) setSelectedScenario(data.scenario);
+        if (data.players) setPlayers(data.players);
         setGamePhase("itemSelection");
+        setDisabledItems(new Set());
+        console.log("🔄 [CLIENTE] Forçando transição para itemSelection");
       }
     );
 
     socket.on("scenarioSelection", () => {
-      console.log("Evento scenarioSelection recebido no Game.tsx");
+      console.log("📋 [CLIENTE] Evento scenarioSelection recebido");
       setGamePhase("selecting");
     });
 
     socket.on("buildingPhase", (data: { scenario: Scenario }) => {
-      console.log("Evento buildingPhase recebido no Game.tsx:", data);
+      console.log("🔧 [CLIENTE] buildingPhase recebido:", data.scenario.name);
       setGamePhase("building");
       setSelectedScenario(data.scenario);
       setBuildingMode(true);
     });
 
-    socket.on("playerMoved", (playerUpdate: Player) => {
-      console.log("Evento playerMoved recebido:", playerUpdate);
-      setPlayers((prev) => ({ ...prev, [playerUpdate.id]: playerUpdate }));
-    });
-
     socket.on("obstacleAdded", (obstacle: Obstacle) => {
-      console.log("Evento obstacleAdded recebido:", obstacle);
+      console.log("🔧 [CLIENTE] obstacleAdded:", obstacle.type);
       setObstacles((prev) => [...prev, obstacle]);
     });
 
     socket.on("itemTaken", ({ itemType }: { itemType: string }) => {
+      console.log("🎯 [CLIENTE] Item tomado:", itemType);
       setDisabledItems((prev) => new Set([...prev, itemType]));
     });
 
     socket.on("startPlaying", () => {
+      console.log("🎮 [CLIENTE] startPlaying recebido");
       setGamePhase("playing");
     });
 
@@ -211,6 +279,7 @@ export default function Game({
     });
 
     socket.on("roundEnd", (data: { newPoints: Record<string, number> }) => {
+      console.log("🏁 [CLIENTE] roundEnd recebido");
       setPlayers((prev) => {
         const updated = { ...prev };
         for (const id in data.newPoints) {
@@ -224,7 +293,7 @@ export default function Game({
       setReachedFlag(false);
       setGamePhase("itemSelection");
       setRoundNumber((prev) => prev + 1);
-      // Reset positions, etc.
+      // Reset positions
       posRef.current = {
         x: width / 2,
         y: height - (selectedScenario?.groundY || 150),
@@ -232,15 +301,18 @@ export default function Game({
     });
 
     socket.on("gameWinner", ({ winnerId }: { winnerId: string }) => {
-      setGameWinner(players[winnerId]?.name || "Desconhecido");
+      const winnerName = players[winnerId]?.name || "Desconhecido";
+      console.log("🏆 [CLIENTE] Vencedor:", winnerName);
+      setGameWinner(winnerName);
     });
 
     return () => {
-      console.log("Desmontando Game.tsx, removendo listeners do socket");
+      console.log("🧹 [CLIENTE] Removendo listeners do socket");
+      socket.off("roomUpdate");
       socket.off("roundStarted");
-      socket.off("playerMoved");
       socket.off("scenarioSelection");
       socket.off("buildingPhase");
+      socket.off("playerMoved");
       socket.off("obstacleAdded");
       socket.off("itemTaken");
       socket.off("startPlaying");
@@ -248,27 +320,31 @@ export default function Game({
       socket.off("roundEnd");
       socket.off("gameWinner");
     };
-  }, [socket, playerName, selectedScenario, players]);
+  }, [socket, roomId]); // Dependências mínimas essenciais
 
+  // Timer para seleção de itens
   useEffect(() => {
     if (gamePhase === "itemSelection") {
+      console.log("⏰ [CLIENTE] Iniciando timer de seleção de itens");
       setShowItemModal(true);
       setRemainingTime(15);
+
       const intervalId = setInterval(() => {
-        setRemainingTime((prev) => prev - 1);
+        setRemainingTime((prev) => {
+          if (prev <= 1) {
+            setShowItemModal(false);
+            socket.emit("skipItemSelection", { roomId });
+            setGamePhase("waitingForOthers");
+          }
+          return prev - 1;
+        });
       }, 1000);
-      const timeoutId = setTimeout(() => {
-        setShowItemModal(false);
-        socket.emit("skipItemSelection", { roomId });
-        setGamePhase("waitingForOthers");
-      }, 15000);
-      return () => {
-        clearInterval(intervalId);
-        clearTimeout(timeoutId);
-      };
+
+      return () => clearInterval(intervalId);
     }
   }, [gamePhase, socket, roomId]);
 
+  // Timer do round
   useEffect(() => {
     if (gamePhase === "playing") {
       const intervalId = setInterval(() => {
@@ -278,6 +354,7 @@ export default function Game({
     }
   }, [gamePhase]);
 
+  // Physics loop
   useEffect(() => {
     if (gamePhase !== "playing") return;
 
@@ -319,6 +396,7 @@ export default function Game({
         velocityRef.current.x = -Math.abs(velocityRef.current.x) * 0.7;
       }
 
+      // Obstacle collisions
       obstacles.forEach((obstacle) => {
         if (
           posRef.current.x < obstacle.x + obstacle.width &&
@@ -378,6 +456,7 @@ export default function Game({
         }
       });
 
+      // Projectile collisions
       projectiles.forEach((proj) => {
         if (
           posRef.current.x < proj.x + proj.width &&
@@ -392,6 +471,7 @@ export default function Game({
         }
       });
 
+      // Flag collision
       const flag = {
         x: levelWidth - 60,
         y: floorY - 50,
@@ -409,14 +489,17 @@ export default function Game({
         socket.emit("reachedFlag", { roomId });
       }
 
+      // Camera follow
       const newOffset = Math.max(
         0,
         Math.min(posRef.current.x - width / 2, levelWidth - width)
       );
       setCameraOffset(newOffset);
 
+      // Update player position
+      const now = Date.now();
       const socketId = socket.id;
-      if (socketId) {
+      if (socketId && now - lastUpdateRef.current > 100) {
         setPlayers((prev) => ({
           ...prev,
           [socketId]: {
@@ -428,6 +511,12 @@ export default function Game({
 
         socket.emit("playerUpdate", {
           roomId,
+          x: posRef.current.x,
+          y: posRef.current.y,
+        });
+        lastUpdateRef.current = now;
+        console.log("📡 [CLIENTE] Enviando playerUpdate:", {
+          socketId,
           x: posRef.current.x,
           y: posRef.current.y,
         });
@@ -452,8 +541,35 @@ export default function Game({
     reachedFlag,
     socket,
     roomId,
-    playerName,
   ]);
+
+  useEffect(() => {
+    if (!socket.connected) {
+      console.log("⚠️ [CLIENTE] Socket desconectado, tentando reconectar...");
+      socket.connect();
+    }
+
+    // Solicitar atualização inicial do estado da sala
+    socket.emit("requestRoomUpdate", { roomId }, (response: any) => {
+      console.log("🏠 [CLIENTE] Resposta requestRoomUpdate:", response);
+      if (response.ok && response.room) {
+        setPlayers(response.room.players);
+        setGamePhase(response.room.phase);
+        setSelectedScenario(response.room.scenario);
+        setIsHost(response.room.host === socket.id);
+        setObstacles(response.room.obstacles || []);
+      }
+    });
+
+    socket.on("connect", () => {
+      console.log("🔌 [CLIENTE] Socket reconectado:", socket.id);
+      socket.emit("requestRoomUpdate", { roomId });
+    });
+
+    return () => {
+      socket.off("connect");
+    };
+  }, [socket, roomId]);
 
   const jump = () => {
     if (isDead || reachedFlag) return;
@@ -461,17 +577,78 @@ export default function Game({
       velocityRef.current.y = JUMP_FORCE;
       setJumpCount((prev) => prev + 1);
       if (isGrounded) setIsGrounded(false);
-      console.log("Jump triggered!");
+      console.log("🦘 [CLIENTE] Jump triggered!");
     }
   };
 
+  // RENDERIZAÇÃO: Fase de espera
+  const renderWaitingPhase = () => {
+    console.log("🎯 [CLIENTE] Renderizando waiting phase");
+    console.log("🎯 [CLIENTE] Players:", Object.keys(players).length, players);
+    console.log("🎯 [CLIENTE] Is Host:", isHost);
+
+    return (
+      <View style={styles.waitingContainer}>
+        <Text style={styles.title}>Sala: {roomId}</Text>
+        <Text style={styles.subtitle}>
+          Jogadores na sala ({Object.keys(players).length}):
+        </Text>
+        {Object.values(players).length === 0 ? (
+          <Text style={styles.waitingLabel}>Nenhum jogador encontrado...</Text>
+        ) : (
+          Object.values(players).map((player) => (
+            <View key={player.id} style={styles.playerRow}>
+              <Text style={styles.playerName}>
+                {player.character} {player.name}
+                {player.id === socket.id && " (Você)"}
+                {isHost && player.id === socket.id && " 👑"}
+              </Text>
+            </View>
+          ))
+        )}
+
+        <Text style={styles.statusText}>Fase atual: {gamePhase}</Text>
+
+        {isHost ? (
+          <View style={styles.hostControls}>
+            <Text style={styles.hostLabel}>Você é o host da sala</Text>
+            <Button
+              title="🎯 Iniciar Seleção de Cenário"
+              onPress={() => {
+                console.log("🚀 [CLIENTE] Host iniciando seleção de cenário");
+                socket.emit("startScenarioSelection", { roomId });
+              }}
+            />
+          </View>
+        ) : (
+          <Text style={styles.waitingLabel}>
+            Aguardando o host iniciar a seleção de cenário...
+          </Text>
+        )}
+
+        <Button title="🚪 Sair" onPress={onExit} />
+      </View>
+    );
+  };
+
+  // Seleção de cenário
   const selectScenario = (scenario: Scenario) => {
+    console.log("🌍 [CLIENTE] Selecionando cenário:", scenario.name);
     socket.emit("selectScenario", { roomId, scenario });
     setSelectedScenario(scenario);
   };
 
+  // Seleção de item
   const handleSelectItem = (type: Obstacle["type"]) => {
-    if (disabledItems.has(type)) return;
+    if (disabledItems.has(type)) {
+      Alert.alert(
+        "Item Indisponível",
+        "Este item já foi escolhido por outro jogador."
+      );
+      return;
+    }
+
+    console.log("🎯 [CLIENTE] Selecionando item:", type);
     socket.emit(
       "selectItem",
       { roomId, itemType: type },
@@ -482,7 +659,6 @@ export default function Game({
           setShowItemModal(false);
           setGamePhase("placing");
         } else {
-          // Already taken
           Alert.alert(
             "Item Indisponível",
             "Este item já foi escolhido por outro jogador."
@@ -492,9 +668,11 @@ export default function Game({
     );
   };
 
+  // Colocar obstáculo
   const placeObstacle = () => {
     if (!selectedObstacleType || !draggingObstacle) return;
 
+    console.log("📍 [CLIENTE] Colocando obstáculo:", selectedObstacleType);
     const size = getObstacleSize(selectedObstacleType);
     const obstacle: Obstacle = {
       id: `${socket.id}-${Date.now()}`,
@@ -511,10 +689,6 @@ export default function Game({
     setSelectedObstacleType(null);
     setDraggingObstacle(null);
     setGamePhase("waitingForOthers");
-  };
-
-  const handleTap = (evt: any) => {
-    // Not used for drag
   };
 
   const getObstacleSize = (type: Obstacle["type"]) => {
@@ -602,24 +776,35 @@ export default function Game({
                 <View
                   style={[
                     styles.obstacleOption,
-                    disabledItems.has(type) && { opacity: 0.5 },
+                    disabledItems.has(type) && { opacity: 0.3 },
                   ]}
                 >
                   <Text style={styles.obstacleEmoji}>
                     {getObstacleEmoji(type)}
                   </Text>
                   <Text style={styles.obstacleLabel}>{type}</Text>
+                  {disabledItems.has(type) && (
+                    <Text style={styles.takenLabel}>Ocupado</Text>
+                  )}
                 </View>
               </TouchableWithoutFeedback>
             ))}
           </ScrollView>
+          <Button
+            title="⏭️ Pular Seleção"
+            onPress={() => {
+              setShowItemModal(false);
+              socket.emit("skipItemSelection", { roomId });
+              setGamePhase("waitingForOthers");
+            }}
+          />
         </View>
       </View>
     </Modal>
   );
 
   const renderBuildingPhase = () => (
-    <TouchableWithoutFeedback onPress={handleTap}>
+    <TouchableWithoutFeedback onPress={() => {}}>
       <View
         style={[
           styles.container,
@@ -630,16 +815,29 @@ export default function Game({
           <Text style={styles.title}>
             Fase de Construção - {selectedScenario?.name}
           </Text>
-          <Button
-            title="Menu Obstáculos"
-            onPress={() => setShowObstacleMenu(true)}
-          />
-          <Button
-            title="Começar Jogo"
-            onPress={() => socket.emit("startRound", { roomId })}
-          />
-          <Button title="Sair" onPress={onExit} />
+          {isHost && (
+            <>
+              <Button
+                title="📋 Obstáculos"
+                onPress={() => setShowObstacleMenu(true)}
+              />
+              <Button
+                title="🚀 Começar Jogo"
+                onPress={() => {
+                  console.log("🚀 [CLIENTE] Host iniciando round");
+                  socket.emit("startRound", { roomId });
+                }}
+              />
+            </>
+          )}
+          <Button title="🚪 Sair" onPress={onExit} />
         </View>
+
+        {!isHost && (
+          <Text style={styles.instruction}>
+            Aguardando o host iniciar o jogo...
+          </Text>
+        )}
 
         {selectedObstacleType && (
           <Text style={styles.instruction}>
@@ -727,7 +925,7 @@ export default function Game({
           <Text style={styles.title}>
             Posicione seu Item - {selectedScenario?.name}
           </Text>
-          <Button title="Sair" onPress={onExit} />
+          <Button title="🚪 Sair" onPress={onExit} />
         </View>
 
         <Text style={styles.instruction}>
@@ -818,7 +1016,7 @@ export default function Game({
         <Text style={styles.title}>
           Aguardando outros jogadores - {selectedScenario?.name}
         </Text>
-        <Button title="Sair" onPress={onExit} />
+        <Button title="🚪 Sair" onPress={onExit} />
       </View>
 
       <Text style={styles.instruction}>
@@ -856,246 +1054,252 @@ export default function Game({
     </View>
   );
 
-  const renderGameplay = () => (
-    <View
-      style={[
-        styles.container,
-        { backgroundColor: selectedScenario?.background || "#def" },
-      ]}
-    >
+  const renderGameplay = () => {
+    console.log("🎮 [CLIENTE] Renderizando gameplay, players:", players);
+
+    return (
       <View
         style={[
-          styles.gameArea,
-          { transform: [{ translateX: -cameraOffset }] },
+          styles.container,
+          { backgroundColor: selectedScenario?.background || "#def" },
         ]}
       >
-        <View style={styles.header}>
-          <Text style={styles.title}>
-            Capybara Chaos - {selectedScenario?.name} | Tempo: {roundCountdown}s
-            | Rodada: {roundNumber}
-          </Text>
-          {Object.values(players).map((p) => (
-            <Text key={p.id} style={styles.playerScore}>
-              {p.name}: {p.points || 0}
-            </Text>
-          ))}
-          <Button title="Sair" onPress={onExit} />
-        </View>
-
-        {Object.values(players).map((p) => (
-          <View
-            key={p.id}
-            style={[
-              styles.player,
-              {
-                left: p.x - 15,
-                top: p.y - 30,
-              },
-            ]}
-          >
-            <Text style={styles.playerCharacter}>{p.character}</Text>
-            <Text style={styles.playerName}>{p.name}</Text>
-          </View>
-        ))}
-
-        {obstacles.map((obs) => (
-          <View
-            key={obs.id}
-            style={[
-              styles.obstacle,
-              {
-                left: obs.x,
-                top: obs.y,
-                width: obs.width,
-                height: obs.height,
-              },
-            ]}
-          >
-            <Text style={styles.obstacleEmoji}>
-              {getObstacleEmoji(obs.type)}
-            </Text>
-          </View>
-        ))}
-
-        {projectiles.map((proj) => (
-          <View
-            key={proj.id}
-            style={[
-              styles.obstacle,
-              {
-                left: proj.x,
-                top: proj.y,
-                width: proj.width,
-                height: proj.height,
-              },
-            ]}
-          >
-            <Text style={styles.obstacleEmoji}>{proj.dir > 0 ? "→" : "←"}</Text>
-          </View>
-        ))}
-
         <View
           style={[
-            styles.ground,
-            {
-              top: height - (selectedScenario?.groundY || 150),
-              backgroundColor:
-                selectedScenario?.background === "#220033" ? "#444" : "#8B4513",
-              width: levelWidth,
-            },
+            styles.gameArea,
+            { transform: [{ translateX: -cameraOffset }] },
           ]}
-        />
-
-        <View
-          style={{
-            position: "absolute",
-            left: levelWidth - 60,
-            top: height - (selectedScenario?.groundY || 150) - 50,
-          }}
         >
-          <Text style={styles.flagEmoji}>🚩</Text>
+          <View style={styles.header}>
+            <Text style={styles.title}>
+              Capybara Chaos - {selectedScenario?.name} | Tempo:{" "}
+              {roundCountdown}s | Rodada: {roundNumber}
+            </Text>
+            {Object.values(players).map((p) => (
+              <Text key={p.id} style={styles.playerScore}>
+                {p.name}: {p.points || 0}
+              </Text>
+            ))}
+            <Button title="🚪 Sair" onPress={onExit} />
+          </View>
+
+          {Object.values(players).length === 0 ? (
+            <Text style={styles.statusText}>Nenhum jogador visível...</Text>
+          ) : (
+            Object.values(players).map((p) => (
+              <View
+                key={p.id}
+                style={[
+                  styles.player,
+                  {
+                    left: p.x - 15,
+                    top: p.y - 30,
+                  },
+                ]}
+              >
+                <Text style={styles.playerCharacter}>{p.character}</Text>
+                <Text style={styles.playerName}>{p.name}</Text>
+              </View>
+            ))
+          )}
+
+          {obstacles.map((obs) => (
+            <View
+              key={obs.id}
+              style={[
+                styles.obstacle,
+                {
+                  left: obs.x,
+                  top: obs.y,
+                  width: obs.width,
+                  height: obs.height,
+                },
+              ]}
+            >
+              <Text style={styles.obstacleEmoji}>
+                {getObstacleEmoji(obs.type)}
+              </Text>
+            </View>
+          ))}
+
+          {projectiles.map((proj) => (
+            <View
+              key={proj.id}
+              style={[
+                styles.obstacle,
+                {
+                  left: proj.x,
+                  top: proj.y,
+                  width: proj.width,
+                  height: proj.height,
+                },
+              ]}
+            >
+              <Text style={styles.obstacleEmoji}>
+                {proj.dir > 0 ? "→" : "←"}
+              </Text>
+            </View>
+          ))}
+
+          <View
+            style={[
+              styles.ground,
+              {
+                top: height - (selectedScenario?.groundY || 150),
+                backgroundColor:
+                  selectedScenario?.background === "#220033"
+                    ? "#444"
+                    : "#8B4513",
+                width: levelWidth,
+              },
+            ]}
+          />
+
+          <View
+            style={{
+              position: "absolute",
+              left: levelWidth - 60,
+              top: height - (selectedScenario?.groundY || 150) - 50,
+            }}
+          >
+            <Text style={styles.flagEmoji}>🚩</Text>
+          </View>
+
+          {gamePhase === "playing" && (
+            <View style={styles.statusIndicators}>
+              <Text style={styles.statusText}>
+                Vel X: {velocityRef.current.x.toFixed(1)}
+              </Text>
+              <Text style={styles.statusText}>
+                Vel Y: {velocityRef.current.y.toFixed(1)}
+              </Text>
+              <Text style={styles.statusText}>
+                {isGrounded ? "🟢 No Chão" : `🔴 No Ar (${jumpCount}/2)`}
+              </Text>
+              {isDead && <Text style={styles.statusText}>💀 Morto</Text>}
+              {reachedFlag && <Text style={styles.statusText}>🏆 Chegou!</Text>}
+            </View>
+          )}
         </View>
 
         {gamePhase === "playing" && (
-          <View style={styles.statusIndicators}>
-            <Text style={styles.statusText}>
-              State X: {joystickPosition.x.toFixed(1)}
-            </Text>
-            <Text style={styles.statusText}>
-              Ref X: {joystickRef.current.x.toFixed(1)}
-            </Text>
-            <Text style={styles.statusText}>
-              Input H: {(joystickRef.current.x / 40).toFixed(2)}
-            </Text>
-            <Text style={styles.statusText}>
-              Vel X: {velocityRef.current.x.toFixed(1)}
-            </Text>
-            <Text style={styles.statusText}>
-              Vel Y: {velocityRef.current.y.toFixed(1)}
-            </Text>
-            <Text style={styles.statusText}>
-              {isGrounded ? "🟢 No Chão" : `🔴 No Ar (${jumpCount}/2)`}
-            </Text>
-            <Text style={styles.statusText}>
-              Ativo: {isJoystickActive ? "SIM" : "NÃO"}
-            </Text>
-            {isDead && <Text style={styles.statusText}>💀 Morto</Text>}
-            {reachedFlag && <Text style={styles.statusText}>🏆 Chegou!</Text>}
+          <View style={styles.gameControls}>
+            <View style={styles.analogStick}>
+              <PanGestureHandler
+                ref={panGestureRef}
+                simultaneousHandlers={[jumpTapRef]}
+                onGestureEvent={(evt) => {
+                  const { translationX: dx, translationY: dy } =
+                    evt.nativeEvent;
+                  const maxDistance = 40;
+                  const distance = Math.sqrt(dx * dx + dy * dy);
+                  let newPosition = { x: dx, y: dy };
+                  if (distance > maxDistance) {
+                    const angle = Math.atan2(dy, dx);
+                    newPosition = {
+                      x: Math.cos(angle) * maxDistance,
+                      y: Math.sin(angle) * maxDistance,
+                    };
+                  }
+                  setJoystickPosition(newPosition);
+                  joystickRef.current = newPosition;
+                }}
+                onHandlerStateChange={(evt) => {
+                  if (evt.nativeEvent.state === State.BEGAN)
+                    setIsJoystickActive(true);
+                  if (
+                    evt.nativeEvent.state === State.END ||
+                    evt.nativeEvent.state === State.CANCELLED
+                  ) {
+                    setIsJoystickActive(false);
+                    setJoystickPosition({ x: 0, y: 0 });
+                    joystickRef.current = { x: 0, y: 0 };
+                  }
+                }}
+              >
+                <View style={styles.analogBase}>
+                  <View
+                    style={[
+                      styles.analogKnob,
+                      {
+                        transform: [
+                          { translateX: joystickPosition.x },
+                          { translateY: joystickPosition.y },
+                        ],
+                        backgroundColor: isJoystickActive ? "#4CAF50" : "#999",
+                      },
+                    ]}
+                  />
+                </View>
+              </PanGestureHandler>
+            </View>
+
+            <TapGestureHandler
+              ref={jumpTapRef}
+              simultaneousHandlers={[panGestureRef]}
+              onHandlerStateChange={(evt) => {
+                if (evt.nativeEvent.state === State.ACTIVE) {
+                  jump();
+                }
+              }}
+            >
+              <View
+                style={[
+                  styles.jumpButton,
+                  { opacity: isGrounded || jumpCount < 2 ? 1 : 0.5 },
+                ]}
+              >
+                <Text style={styles.jumpText}>
+                  {jumpCount === 0 ? "🦘" : jumpCount === 1 ? "🚀" : "❌"}
+                </Text>
+                <Text style={styles.jumpLabel}>
+                  {isGrounded ? "PULO" : jumpCount < 2 ? "DUPLO" : "MAX"}
+                </Text>
+              </View>
+            </TapGestureHandler>
           </View>
         )}
-      </View>
 
-      {gamePhase === "playing" && (
-        <View style={styles.gameControls}>
-          <View style={styles.analogStick}>
-            <PanGestureHandler
-              ref={panGestureRef}
-              simultaneousHandlers={[jumpTapRef]}
-              onGestureEvent={(evt) => {
-                const { translationX: dx, translationY: dy } = evt.nativeEvent;
-                const maxDistance = 40;
-                const distance = Math.sqrt(dx * dx + dy * dy);
-                let newPosition = { x: dx, y: dy };
-                if (distance > maxDistance) {
-                  const angle = Math.atan2(dy, dx);
-                  newPosition = {
-                    x: Math.cos(angle) * maxDistance,
-                    y: Math.sin(angle) * maxDistance,
-                  };
-                }
-                setJoystickPosition(newPosition);
-                joystickRef.current = newPosition;
-              }}
-              onHandlerStateChange={(evt) => {
-                if (evt.nativeEvent.state === State.BEGAN)
-                  setIsJoystickActive(true);
-                if (
-                  evt.nativeEvent.state === State.END ||
-                  evt.nativeEvent.state === State.CANCELLED
-                ) {
-                  setIsJoystickActive(false);
-                  setJoystickPosition({ x: 0, y: 0 });
-                  joystickRef.current = { x: 0, y: 0 };
-                }
-              }}
-            >
-              <View style={styles.analogBase}>
-                <View
-                  style={[
-                    styles.analogKnob,
-                    {
-                      transform: [
-                        { translateX: joystickPosition.x },
-                        { translateY: joystickPosition.y },
-                      ],
-                      backgroundColor: isJoystickActive ? "#4CAF50" : "#999",
-                    },
-                  ]}
-                />
+        {gameWinner && (
+          <Modal visible={!!gameWinner} transparent animationType="fade">
+            <View style={styles.modalContainer}>
+              <View style={styles.obstacleMenu}>
+                <Text style={styles.title}>🏆 Vencedor: {gameWinner}</Text>
+                <Button title="🚪 Sair" onPress={onExit} />
               </View>
-            </PanGestureHandler>
-          </View>
-
-          <TapGestureHandler
-            ref={jumpTapRef}
-            simultaneousHandlers={[panGestureRef]}
-            onHandlerStateChange={(evt) => {
-              if (evt.nativeEvent.state === State.ACTIVE) {
-                jump();
-              }
-            }}
-          >
-            <View
-              style={[
-                styles.jumpButton,
-                { opacity: isGrounded || jumpCount < 2 ? 1 : 0.5 },
-              ]}
-            >
-              <Text style={styles.jumpText}>
-                {jumpCount === 0 ? "🦘" : jumpCount === 1 ? "🚀" : "❌"}
-              </Text>
-              <Text style={styles.jumpLabel}>
-                {isGrounded ? "PULO" : jumpCount < 2 ? "DUPLO" : "MAX"}
-              </Text>
             </View>
-          </TapGestureHandler>
-        </View>
-      )}
+          </Modal>
+        )}
+        {gamePhase === "itemSelection" && renderItemSelectionModal()}
+      </View>
+    );
+  };
 
-      {gameWinner && (
-        <Modal visible={!!gameWinner} transparent animationType="fade">
-          <View style={styles.modalContainer}>
-            <View style={styles.obstacleMenu}>
-              <Text style={styles.title}>Vencedor: {gameWinner}</Text>
-              <Button title="Sair" onPress={onExit} />
-            </View>
-          </View>
-        </Modal>
-      )}
-      {gamePhase === "itemSelection" && renderItemSelectionModal()}
-    </View>
-  );
+  // SWITCH PRINCIPAL: Determina qual fase renderizar
+  const renderCurrentPhase = () => {
+    console.log(`🎨 [CLIENTE] Renderizando fase: ${gamePhase}`);
 
-  switch (gamePhase) {
-    case "selecting":
-      return renderScenarioSelection();
-    case "building":
-      return renderBuildingPhase();
-    case "placing":
-      return renderPlacingPhase();
-    case "waitingForOthers":
-      return renderWaitingForOthers();
-    case "itemSelection":
-    case "playing":
-      return renderGameplay();
-    default:
-      return (
-        <View style={styles.waitingContainer}>
-          <Text style={styles.title}>Aguardando início do jogo...</Text>
-          <Button title="Sair" onPress={onExit} />
-        </View>
-      );
-  }
+    switch (gamePhase) {
+      case "waiting":
+        return renderWaitingPhase();
+      case "selecting":
+        return renderScenarioSelection();
+      case "building":
+        return renderBuildingPhase();
+      case "placing":
+        return renderPlacingPhase();
+      case "waitingForOthers":
+        return renderWaitingForOthers();
+      case "itemSelection":
+      case "playing":
+        return renderGameplay();
+      default:
+        console.warn(`⚠️ [CLIENTE] Fase desconhecida: ${gamePhase}`);
+        return renderWaitingPhase();
+    }
+  };
+
+  return renderCurrentPhase();
 }
 
 const styles = StyleSheet.create({
@@ -1123,6 +1327,13 @@ const styles = StyleSheet.create({
     textShadowOffset: { width: -1, height: 1 },
     textShadowRadius: 10,
   },
+  subtitle: {
+    fontSize: 16,
+    fontWeight: "600",
+    textAlign: "center",
+    marginVertical: 10,
+    color: "#333",
+  },
   playerScore: {
     color: "#fff",
     fontSize: 14,
@@ -1134,6 +1345,46 @@ const styles = StyleSheet.create({
     alignItems: "center",
     backgroundColor: "#def",
     padding: 20,
+  },
+  playerRow: {
+    padding: 8,
+    marginVertical: 2,
+    backgroundColor: "rgba(255,255,255,0.8)",
+    borderRadius: 5,
+    minWidth: 200,
+  },
+  playerName: {
+    fontSize: 16,
+    textAlign: "center",
+    color: "#333",
+  },
+  statusText: {
+    fontSize: 14,
+    color: "#666",
+    textAlign: "center",
+    marginVertical: 5,
+  },
+  hostControls: {
+    marginVertical: 20,
+    padding: 15,
+    backgroundColor: "rgba(76, 175, 80, 0.1)",
+    borderRadius: 8,
+    borderWidth: 2,
+    borderColor: "#4CAF50",
+  },
+  hostLabel: {
+    fontSize: 16,
+    fontWeight: "bold",
+    color: "#4CAF50",
+    textAlign: "center",
+    marginBottom: 10,
+  },
+  waitingLabel: {
+    fontSize: 16,
+    color: "#666",
+    textAlign: "center",
+    fontStyle: "italic",
+    marginVertical: 20,
   },
   selectionContainer: {
     flex: 1,
@@ -1184,15 +1435,6 @@ const styles = StyleSheet.create({
   playerCharacter: {
     fontSize: 24,
   },
-  playerName: {
-    fontSize: 10,
-    fontWeight: "bold",
-    color: "#fff",
-    backgroundColor: "rgba(0,0,0,0.5)",
-    paddingHorizontal: 4,
-    borderRadius: 3,
-    textAlign: "center",
-  },
   obstacle: {
     position: "absolute",
     justifyContent: "center",
@@ -1208,6 +1450,12 @@ const styles = StyleSheet.create({
   obstacleLabel: {
     fontSize: 10,
     textAlign: "center",
+    marginTop: 2,
+  },
+  takenLabel: {
+    fontSize: 8,
+    color: "red",
+    fontWeight: "bold",
   },
   ground: {
     position: "absolute",
@@ -1319,11 +1567,6 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(0,0,0,0.5)",
     padding: 8,
     borderRadius: 5,
-  },
-  statusText: {
-    color: "#fff",
-    fontSize: 12,
-    marginBottom: 2,
   },
   flagEmoji: {
     fontSize: 32,
